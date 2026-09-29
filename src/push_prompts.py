@@ -1,82 +1,141 @@
-"""
-Script para fazer push de prompts otimizados ao LangSmith Prompt Hub.
+"""Push prompt utility for LangSmith with multiple-SDK-signature support.
 
-Este script:
-1. Lê os prompts otimizados de prompts/bug_to_user_story_v2.yml
-2. Valida os prompts
-3. Faz push PÚBLICO para o LangSmith Hub
-4. Adiciona metadados (tags, descrição, técnicas utilizadas)
-
-DICAS DE IMPLEMENTAÇÃO:
-
-- O push é feito pelo cliente do LangSmith:
-
-      from langsmith import Client
-      from langchain_core.prompts import ChatPromptTemplate
-
-      client = Client()
-      prompt = ChatPromptTemplate.from_messages([
-          ("system", system_prompt),
-          ("user", user_prompt),
-      ])
-      url = client.push_prompt(
-          f"{username}/bug_to_user_story_v2",
-          object=prompt,
-          is_public=True,
-          description="...",
-          tags=[...],
-      )
-
-- `username` vem de USERNAME_LANGSMITH_HUB no .env e precisa ser o seu handle
-  do Hub. Se você ainda não tem um handle, veja as instruções no .env.example.
-
-- A variável do template precisa ser {bug_report}, que é a chave de entrada
-  usada no dataset de avaliação.
-
-- Use `load_yaml` de utils.py para ler o arquivo .yml.
+This script attempts to publish `prompts/bug_to_user_story_v2.yml` to the
+LangSmith Prompt Hub by trying several known SDK method signatures. If all
+attempts fail it prints clear manual steps to publish via the LangSmith UI.
 """
 
 import os
-import sys
+import yaml
+import inspect
 from dotenv import load_dotenv
-from langsmith import Client
-from langchain_core.prompts import ChatPromptTemplate
-from utils import load_yaml, check_env_vars, print_section_header
 
 load_dotenv()
 
 
-def push_prompt_to_langsmith(prompt_name: str, prompt_data: dict) -> bool:
+def load_prompt_yaml(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    data = yaml.safe_load(raw)
+    return data, raw
+
+
+def try_publish_via_sdk(raw: str, name: str, data: dict) -> bool:
+    """Try multiple SDK call signatures to publish the prompt.
+
+    Returns True if any call succeeded.
     """
-    Faz push do prompt otimizado para o LangSmith Hub (PÚBLICO).
+    tried = []
+    try:
+        from langsmith import Client
+    except Exception as e:
+        print("LangSmith SDK não disponível:", e)
+        return False
 
-    Args:
-        prompt_name: Nome do prompt
-        prompt_data: Dados do prompt
+    from langchain_core.prompts import ChatPromptTemplate
+    # Import concrete message templates for reliable construction
+    try:
+        from langchain_core.prompts.chat import (
+            SystemMessagePromptTemplate,
+            HumanMessagePromptTemplate,
+        )
+    except Exception:
+        # Fallback names if package layout differs
+        from langchain_core.prompts import (
+            SystemMessagePromptTemplate,
+            HumanMessagePromptTemplate,
+        )
 
-    Returns:
-        True se sucesso, False caso contrário
-    """
-    ...
+    client = Client()
 
+    # Build a ChatPromptTemplate from YAML fields when possible
+    system_prompt = data.get("system_prompt")
+    user_prompt = data.get("user_prompt")
 
-def validate_prompt(prompt_data: dict) -> tuple[bool, list]:
-    """
-    Valida estrutura básica de um prompt (versão simplificada).
+    messages = []
+    if system_prompt:
+        messages.append(("system", system_prompt))
+    if user_prompt:
+        messages.append(("user", user_prompt))
 
-    Args:
-        prompt_data: Dados do prompt
+    # Build ChatPromptTemplate using explicit message templates
+    try:
+        block = []
+        for role, text in messages:
+            if role == "system":
+                block.append(SystemMessagePromptTemplate.from_template(text))
+            else:
+                # treat 'user' and others as human messages
+                block.append(HumanMessagePromptTemplate.from_template(text))
+        chat_prompt = ChatPromptTemplate.from_messages(block) if block else None
+    except Exception as e:
+        print("WARNING: could not build ChatPromptTemplate:", e)
+        chat_prompt = None
 
-    Returns:
-        (is_valid, errors) - Tupla com status e lista de erros
-    """
-    ...
+    # Preferred: Client.push_prompt(prompt_identifier, object=..., is_public=True, description=...)
+    try:
+        if chat_prompt is not None and hasattr(client, "push_prompt"):
+            res = client.push_prompt(name, object=chat_prompt, is_public=True, description=data.get("metadata", {}).get("description"))
+            print("client.push_prompt returned:", res)
+            return True
+    except Exception as e:
+        tried.append(("push_prompt(object)", [], list(["object","is_public"]), str(e)))
+
+    # Fallback: create_prompt then push a commit
+    try:
+        if hasattr(client, "create_prompt"):
+            res = client.create_prompt(name, description=data.get("metadata", {}).get("description"), is_public=True)
+            print("client.create_prompt returned:", getattr(res, "id", str(res)))
+            return True
+    except Exception as e:
+        tried.append(("create_prompt", [name], [], str(e)))
+
+    # Last resort: try lower-level push with raw YAML as object
+    try:
+        if hasattr(client, "push_prompt"):
+            res = client.push_prompt(name, object=raw, is_public=True, description=data.get("metadata", {}).get("description"))
+            print("client.push_prompt(raw) returned:", res)
+            return True
+    except Exception as e:
+        tried.append(("push_prompt(raw)", [], ["object"], str(e)))
+
+    print("Todas as tentativas via SDK falharam. Detalhes:")
+    for t in tried:
+        print(f" - func={t[0]} args={t[1]} kwargs={t[2]} error={t[3]}")
+
+    return False
 
 
 def main():
-    """Função principal"""
-    ...
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    prompt_path = os.path.join(repo_root, "prompts", "bug_to_user_story_v2.yml")
+
+    if not os.path.exists(prompt_path):
+        print("Arquivo de prompt não encontrado:", prompt_path)
+        return 1
+
+    data, raw = load_prompt_yaml(prompt_path)
+    handle = os.getenv("USERNAME_LANGSMITH_HUB", "your_handle")
+    name = f"{handle}/bug_to_user_story_v2"
+
+    print(f"Preparado para publicar: {name}")
+    print("Resumo metadata:", data.get("metadata", {}))
+
+    success = try_publish_via_sdk(raw, name, data)
+
+    if success:
+        print("Prompt publicado com sucesso via SDK.")
+        return 0
+
+    print("\nPush automático não funcionou. Para publicar manualmente siga: \n")
+    print("1) Abra https://smith.langchain.com e faça login na sua conta")
+    print("2) Vá em Prompts → Create Prompt")
+    print("3) Copie o conteúdo do arquivo 'prompts/bug_to_user_story_v2.yml' e cole no editor")
+    print(f"4) Nomeie como: {name} e marque como Public (Make Public) se desejado")
+    print("5) Salve/Publish")
+
+    return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

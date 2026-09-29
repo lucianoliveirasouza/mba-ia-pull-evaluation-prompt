@@ -48,3 +48,8 @@ ENV/
 screenshots/
 results/
 .claude/
+
+docs/
+scripts/
+tools/
+notas.txt
