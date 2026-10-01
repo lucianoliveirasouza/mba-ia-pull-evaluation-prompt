@@ -27,13 +27,13 @@ def load_yaml(file_path: str) -> Optional[Dict[str, Any]]:
             data = yaml.safe_load(f)
         return data
     except FileNotFoundError:
-        print(f"ERROR Arquivo nao encontrado: {file_path}")
+        print(f"❌ Arquivo não encontrado: {file_path}")
         return None
     except yaml.YAMLError as e:
-        print(f"ERROR Erro ao parsear YAML: {e}")
+        print(f"❌ Erro ao parsear YAML: {e}")
         return None
     except Exception as e:
-        print(f"ERROR Erro ao carregar arquivo: {e}")
+        print(f"❌ Erro ao carregar arquivo: {e}")
         return None
 
 
@@ -57,7 +57,7 @@ def save_yaml(data: Dict[str, Any], file_path: str) -> bool:
 
         return True
     except Exception as e:
-        print(f"ERROR Erro ao salvar arquivo: {e}")
+        print(f"❌ Erro ao salvar arquivo: {e}")
         return False
 
 
@@ -78,7 +78,7 @@ def check_env_vars(required_vars: list) -> bool:
             missing_vars.append(var)
 
     if missing_vars:
-        print("ERROR Variaveis de ambiente faltando:")
+        print("❌ Variáveis de ambiente faltando:")
         for var in missing_vars:
             print(f"   - {var}")
         print("\nConfigure-as no arquivo .env antes de continuar.")
@@ -98,7 +98,7 @@ def format_score(score: float, threshold: float = 0.8) -> str:
     Returns:
         String formatada com score e símbolo
     """
-    symbol = "OK" if score >= threshold else "FAIL"
+    symbol = "✓" if score >= threshold else "✗"
     return f"{score:.2f} {symbol}"
 
 
@@ -209,18 +209,6 @@ def get_llm(model: Optional[str] = None, temperature: float = 0.0):
                 "Obtenha uma chave em: https://platform.openai.com/api-keys"
             )
 
-        # Sanity check: Google Gemini model IDs (e.g., 'gemini-*') are not
-        # valid on the OpenAI provider and will cause runtime model-not-found
-        # errors. Detect accidental mismatches early and provide guidance.
-        mn = (model_name or "").lower()
-        if "gemini" in mn:
-            raise ValueError(
-                f"Modelo '{model_name}' parece ser um modelo Google Gemini, mas 'LLM_PROVIDER' está configurado como 'openai'.\n"
-                "Opções para resolver:\n"
-                "  - Use um modelo OpenAI (ex.: 'gpt-3.5-turbo') definindo 'LLM_MODEL' apropriadamente.\n"
-                "  - Ou altere 'LLM_PROVIDER=google' e configure 'GOOGLE_API_KEY' se pretende usar Gemini."
-            )
-
         return ChatOpenAI(
             model=model_name,
             temperature=temperature,
@@ -235,18 +223,6 @@ def get_llm(model: Optional[str] = None, temperature: float = 0.0):
             raise ValueError(
                 "GOOGLE_API_KEY não configurada no .env\n"
                 "Obtenha uma chave em: https://aistudio.google.com/app/apikey"
-            )
-
-        # Sanity check: common OpenAI-style model IDs are not supported by
-        # the Google GenAI API (they cause hard 404s at runtime). Detect
-        # accidental mismatches and raise a clear error before making API calls.
-        mn = (model_name or "").lower()
-        if mn.startswith("gpt-") or "gpt-" in mn:
-            raise ValueError(
-                f"Modelo '{model_name}' parece ser um modelo OpenAI, mas 'LLM_PROVIDER' está configurado como 'google'.\n"
-                "Opções para resolver:\n"
-                "  - Use um modelo compatível com Google definindo 'LLM_MODEL' para um modelo GenAI (ex.: 'gemini-*') e configure 'GOOGLE_API_KEY'.\n"
-                "  - Ou altere 'LLM_PROVIDER=openai' e configure 'OPENAI_API_KEY' no .env se pretende usar modelos OpenAI."
             )
 
         return ChatGoogleGenerativeAI(

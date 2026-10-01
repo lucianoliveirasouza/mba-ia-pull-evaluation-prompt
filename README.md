@@ -352,3 +352,65 @@ Rode uma vez e guarde o endereço: ao compartilhar de novo, o link muda.
 - Não altere os datasets de avaliação - apenas os prompts em prompts/bug_to_user_story_v2.yml
 - Itere, itere, itere - é normal precisar de 3-5 iterações para atingir 0.8 em todas as métricas
 - Documente seu processo - a jornada de otimização é tão importante quanto o resultado final
+
+## Técnicas Aplicadas (Fase 2)
+
+- **Role Prompting:** o papel de Product Manager mantém a transformação orientada a valor do usuário e a uma história implementável.
+- **Few-shot Learning:** cinco exemplos cobrem relatos simples, cálculo de desconto e webhook, demonstrando como preservar os fatos, os valores e os sinais técnicos em critérios BDD.
+- **Skeleton of Thought:** um roteiro interno organiza persona, comportamento observado/esperado, critérios BDD e contexto técnico. A resposta contém apenas o formato final, sem expor raciocínio interno.
+
+Em relação ao v1, o v2 separa contexto, critérios de aceitação e tarefas técnicas, exige evidência rastreável para cada critério e prevê perguntas quando faltam dados. A entrada do prompt usa `{bug_report}`, a mesma chave do dataset.
+
+## Implementação
+
+- `prompts/bug_to_user_story_v2.yml`: prompt System/User com regras de fidelidade, Role Prompting, Few-shot Learning e Skeleton of Thought.
+- `src/pull_prompts.py`: obtém o prompt inicial do Prompt Hub e salva a versão local.
+- `src/push_prompts.py`: publica a versão otimizada, descrição, técnicas/versão como tags e exemplos few-shot como pares de mensagens no Prompt Hub.
+- `src/evaluate.py` e `src/metrics.py`: executam a avaliação no LangSmith e calculam Helpfulness, Correctness, F1-Score, Clarity e Precision.
+- `src/utils.py`: funções auxiliares de configuração, YAML e formatação.
+
+## Testes
+
+`tests/test_prompts.py` valida a presença do System Prompt e da persona, o formato de User Story/BDD, a serialização dos pares few-shot e tags de publicação, a ausência de marcadores pendentes, as técnicas declaradas e a correspondência de `{bug_report}` com as chaves do dataset.
+
+```powershell
+python -m pytest tests/test_prompts.py -q
+```
+
+Última validação local: **10 testes passaram**. Esses testes não fazem chamadas a modelos nem ao LangSmith.
+
+## Resultados Finais
+
+A execução aprovada usou `gpt-4.1-mini` para geração e avaliação no dataset `prompt-optimization-sample5` (15 exemplos). Todas as métricas superaram o limite de 0,80 e a média geral foi **0,8692**:
+
+| Métrica | Resultado | Limite |
+| --- | ---: | ---: |
+| Helpfulness | 0.8600 | 0.80 |
+| Correctness | 0.8942 | 0.80 |
+| F1-Score | 0.8718 | 0.80 |
+| Clarity | 0.8033 | 0.80 |
+| Precision | 0.9167 | 0.80 |
+
+Média geral: **0,8692**. [Dataset público `prompt-optimization-sample5`](https://smith.langchain.com/public/a29eefe3-56d2-45b9-931d-490442df826a/d) · [Experimento aprovado no LangSmith](https://smith.langchain.com/o/858b011e-537b-4b74-aad9-0ad8392db47d/datasets/55c59189-c86a-4c37-b991-c6e8cb14c9ce/compare?selectedSessions=97ec4209-e9b2-4dda-bc80-451176af28e0).
+
+![Painel do LangSmith para prompt-optimization-sample5: experimentos com 15 de 15 runs e métricas acima de 0,80](resultados/Captura%20de%20tela%202026-10-01%20164046.png)
+
+A captura mostra o dataset e execuções completas; os valores da tabela acima pertencem ao experimento aprovado vinculado. A tentativa com `gpt-4.1` foi interrompida por limite TPM e não foi usada nos resultados.
+
+## Como Executar
+
+Pré-requisitos: Python 3.10+, dependências de `requirements.txt`, credenciais do LangSmith e chave do provedor escolhido. Configure `.env` conforme [docs/INSTRUCOES_EXECUCAO.md](docs/INSTRUCOES_EXECUCAO.md); não versione chaves.
+
+Modelo local atual: `gpt-4.1-mini` para geração e avaliação. Altere `LLM_MODEL` ou `EVAL_MODEL` no `.env` caso sua conta use outros modelos.
+
+```powershell
+python -m venv venv
+venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pytest tests/test_prompts.py -q
+python src/pull_prompts.py
+python src/push_prompts.py
+python src/evaluate.py
+```
+
+`src/evaluate.py` usa o dataset `<LANGSMITH_PROJECT>-eval`, conforme o fluxo-base. A avaliação faz chamadas ao provedor configurado e pode gerar custos.

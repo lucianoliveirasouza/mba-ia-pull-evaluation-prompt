@@ -1,6 +1,7 @@
 """
 Testes automatizados para validação de prompts.
 """
+import json
 import pytest
 import yaml
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from utils import validate_prompt_structure
+from push_prompts import build_chat_prompt, build_prompt_tags, is_unchanged_prompt_error
 
 def load_prompts(file_path: str):
     """Carrega prompts do arquivo YAML."""
@@ -28,7 +30,44 @@ class TestPrompts:
         prompts_file = Path(__file__).parent.parent / "prompts" / "bug_to_user_story_v2.yml"
         data = load_prompts(str(prompts_file))
         sp = data.get("system_prompt", "")
-        assert "Product Manager" in sp or "Product Manager" in sp, "role 'Product Manager' não encontrado no system_prompt"
+        assert "Product Manager" in sp, "role 'Product Manager' não encontrado no system_prompt"
+
+    def test_prompt_uses_dataset_input_key(self):
+        root = Path(__file__).parent.parent
+        data = load_prompts(str(root / "prompts" / "bug_to_user_story_v2.yml"))
+        dataset_path = root / "datasets" / "bug_to_user_story.jsonl"
+        examples = [json.loads(line) for line in dataset_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        assert "{bug_report}" in data.get("user_prompt", "")
+        assert all(set(example["inputs"]) == {"bug_report"} for example in examples)
+
+    def test_push_prompt_includes_few_shot_messages(self):
+        prompts_file = Path(__file__).parent.parent / "prompts" / "bug_to_user_story_v2.yml"
+        data = load_prompts(str(prompts_file))
+        rendered = build_chat_prompt(data).invoke({"bug_report": "Relato de teste."})
+
+        assert len(rendered.messages) == 2 + 2 * len(data["few_shot_examples"])
+        assert rendered.messages[1].type == "human"
+        assert data["few_shot_examples"][0]["input"] in rendered.messages[1].content
+        assert rendered.messages[2].type == "ai"
+        assert data["few_shot_examples"][0]["output"] in rendered.messages[2].content
+        assert rendered.messages[-1].content.strip() == "BUG REPORT:\nRelato de teste."
+
+    def test_push_prompt_tags_include_techniques_and_version(self):
+        prompts_file = Path(__file__).parent.parent / "prompts" / "bug_to_user_story_v2.yml"
+        data = load_prompts(str(prompts_file))
+
+        assert build_prompt_tags(data) == [
+            "role_prompting",
+            "few_shot",
+            "skeleton_of_thought",
+            "version:v2",
+        ]
+
+    def test_push_accepts_unchanged_content_after_metadata_update(self):
+        error = Exception("Nothing to commit: prompt has not changed since latest commit")
+        assert is_unchanged_prompt_error(error)
+        assert not is_unchanged_prompt_error(Exception("permission denied"))
 
     def test_prompt_mentions_format(self):
         """Verifica se o prompt exige formato Markdown ou User Story padrão."""

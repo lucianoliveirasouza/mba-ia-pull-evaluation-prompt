@@ -20,6 +20,39 @@ def load_prompt_yaml(path: str):
     return data, raw
 
 
+def build_chat_prompt(data: dict):
+    from langchain_core.prompts import ChatPromptTemplate
+
+    messages = []
+    if data.get("system_prompt"):
+        messages.append(("system", data["system_prompt"]))
+
+    for example in data.get("few_shot_examples", []):
+        example_input = example.get("input", "").replace("{", "{{").replace("}", "}}")
+        example_output = example.get("output", "").replace("{", "{{").replace("}", "}}")
+        if example_input and example_output:
+            messages.append(("human", f"BUG REPORT:\n{example_input}"))
+            messages.append(("ai", example_output))
+
+    if data.get("user_prompt"):
+        messages.append(("human", data["user_prompt"]))
+
+    return ChatPromptTemplate.from_messages(messages) if messages else None
+
+
+def build_prompt_tags(data: dict) -> list[str]:
+    metadata = data.get("metadata", {})
+    tags = list(metadata.get("techniques", []))
+    version = metadata.get("version") or data.get("version")
+    if version:
+        tags.append(f"version:{version}")
+    return tags
+
+
+def is_unchanged_prompt_error(error: Exception) -> bool:
+    return "nothing to commit" in str(error).lower()
+
+
 def try_publish_via_sdk(raw: str, name: str, data: dict) -> bool:
     """Try multiple SDK call signatures to publish the prompt.
 
@@ -32,42 +65,10 @@ def try_publish_via_sdk(raw: str, name: str, data: dict) -> bool:
         print("LangSmith SDK não disponível:", e)
         return False
 
-    from langchain_core.prompts import ChatPromptTemplate
-    # Import concrete message templates for reliable construction
-    try:
-        from langchain_core.prompts.chat import (
-            SystemMessagePromptTemplate,
-            HumanMessagePromptTemplate,
-        )
-    except Exception:
-        # Fallback names if package layout differs
-        from langchain_core.prompts import (
-            SystemMessagePromptTemplate,
-            HumanMessagePromptTemplate,
-        )
-
     client = Client()
 
-    # Build a ChatPromptTemplate from YAML fields when possible
-    system_prompt = data.get("system_prompt")
-    user_prompt = data.get("user_prompt")
-
-    messages = []
-    if system_prompt:
-        messages.append(("system", system_prompt))
-    if user_prompt:
-        messages.append(("user", user_prompt))
-
-    # Build ChatPromptTemplate using explicit message templates
     try:
-        block = []
-        for role, text in messages:
-            if role == "system":
-                block.append(SystemMessagePromptTemplate.from_template(text))
-            else:
-                # treat 'user' and others as human messages
-                block.append(HumanMessagePromptTemplate.from_template(text))
-        chat_prompt = ChatPromptTemplate.from_messages(block) if block else None
+        chat_prompt = build_chat_prompt(data)
     except Exception as e:
         print("WARNING: could not build ChatPromptTemplate:", e)
         chat_prompt = None
@@ -75,10 +76,19 @@ def try_publish_via_sdk(raw: str, name: str, data: dict) -> bool:
     # Preferred: Client.push_prompt(prompt_identifier, object=..., is_public=True, description=...)
     try:
         if chat_prompt is not None and hasattr(client, "push_prompt"):
-            res = client.push_prompt(name, object=chat_prompt, is_public=True, description=data.get("metadata", {}).get("description"))
+            res = client.push_prompt(
+                name,
+                object=chat_prompt,
+                is_public=True,
+                description=data.get("metadata", {}).get("description"),
+                tags=build_prompt_tags(data),
+            )
             print("client.push_prompt returned:", res)
             return True
     except Exception as e:
+        if is_unchanged_prompt_error(e):
+            print("Prompt sem alterações de conteúdo; metadados sincronizados no LangSmith.")
+            return True
         tried.append(("push_prompt(object)", [], list(["object","is_public"]), str(e)))
 
     # Fallback: create_prompt then push a commit
